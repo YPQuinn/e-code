@@ -1,4 +1,4 @@
 /**
- * Agent 循环、消息模型、tool 接口和内置 tool。不依赖任何内部模块。
+ * Agent loop, message model, tool interface and built-in tools. Depends on no internal module.
  */
 package io.agentic.pplee.ecode.core;

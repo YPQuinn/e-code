@@ -10,6 +10,10 @@ public sealed interface Message {
 
     record Assistant(List<ContentBlock> content, StopReason stopReason, Usage usage) implements Message {
 
+        public Assistant {
+            content = List.copyOf(content);
+        }
+
         public List<ContentBlock.ToolCall> toolCalls() {
             // in the order of occurrence
             return content.stream()

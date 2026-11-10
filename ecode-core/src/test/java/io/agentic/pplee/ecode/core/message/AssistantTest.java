@@ -1,7 +1,9 @@
 package io.agentic.pplee.ecode.core.message;
 
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+
+import tools.jackson.databind.json.JsonMapper;
 
 import org.junit.jupiter.api.Test;
 
@@ -9,8 +11,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class AssistantTest {
 
-    private static final ContentBlock.ToolCall READ = new ContentBlock.ToolCall("call_1", "read", Map.of("path", "a.txt"));
-    private static final ContentBlock.ToolCall GREP = new ContentBlock.ToolCall("call_2", "grep", Map.of("pattern", "foo"));
+    private static final JsonMapper JSON = JsonMapper.builder().build();
+    private static final ContentBlock.ToolCall READ = new ContentBlock.ToolCall("call_1", "read", JSON.createObjectNode().put("path", "a.txt"));
+    private static final ContentBlock.ToolCall GREP = new ContentBlock.ToolCall("call_2", "grep", JSON.createObjectNode().put("pattern", "foo"));
 
     @Test
     void toolCallsKeepsOrderOfOccurrence() {
@@ -43,6 +46,16 @@ class AssistantTest {
     @Test
     void toolCallsIsEmptyWithoutContent() {
         assertThat(assistant().toolCalls()).isEmpty();
+    }
+
+    @Test
+    void contentIsCopiedOnConstruction() {
+        var blocks = new ArrayList<ContentBlock>(List.of(READ));
+        var message = new Message.Assistant(blocks, StopReason.TOOL_USE, Usage.EMPTY);
+
+        blocks.add(GREP);
+
+        assertThat(message.content()).containsExactly(READ);
     }
 
     private static Message.Assistant assistant(ContentBlock... blocks) {

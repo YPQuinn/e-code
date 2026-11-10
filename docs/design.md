@@ -64,7 +64,7 @@
 1. 自建薄 `Model` 接口，直接使用官方 SDK。不使用 Spring AI 的 `ChatModel`。
 2. `Model` 接口只声明 tool（名称、描述、参数模式）。tool 的执行在 Agent 循环。
 3. 协议和服务商分开：一个协议实现可以对应多个服务商，差别只在 `baseUrl` 和认证。
-4. 流式接口返回阻塞的事件流，与同步 API 一致。事件类型参考 pi：开始、文本增量、思考增量、tool 调用增量、结束或错误。
+4. 流式接口返回阻塞的事件流，与同步 API 一致。事件类型参考 pi：文本增量、思考增量、tool 调用增量、结束或错误。
 5. 首批实现 2 个适配类：
    - Anthropic Messages，使用 `com.anthropic:anthropic-java`。
    - OpenAI 兼容接口，使用 `com.openai:openai-java`。
@@ -154,6 +154,7 @@
 - Jackson 共存：Anthropic 和 OpenAI 的 SDK 使用 Jackson 2（`com.fasterxml`），ACP SDK 和 Spring Boot 4.1 使用 Jackson 3（`tools.jackson`）。两者包名不同，可以共存，但项目创建后必须用依赖树确认。
 - OpenAI 兼容服务商的非标准字段，例如思考内容，是否能通过 `openai-java` 读取。
 - `openai-java` 的 `baseUrl` 在构建器上的设置方式。
+- 取消：`Model.stream` 目前没有取消参数。实现 `CancelToken` 时决定：由循环从另一个线程关闭流，还是把 `CancelToken` 传入 `stream`。关闭流的做法需要先验证 Anthropic 和 OpenAI SDK 在阻塞读取时被关闭的行为。
 
 ### ACP 细节
 
