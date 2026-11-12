@@ -26,5 +26,10 @@ public sealed interface Message {
         }
     }
 
-    record ToolResult(String toolCallId, String toolName, String text, boolean isError) implements Message {}
+    record ToolResult(String toolCallId, String toolName, String text, boolean isError) implements Message {
+
+        public static ToolResult error(ContentBlock.ToolCall call, String text) {
+            return new ToolResult(call.id(), call.name(), text, true);
+        }
+    }
 }
