@@ -82,13 +82,16 @@
    - 一批调用全部启动，每个调用在一个虚拟线程里运行。
    - 并行安全的 tool 持读锁，其余持写锁。写锁与所有其他调用互斥。
    - 使用 `ReentrantReadWriteLock`。
-   - 并行安全由 ACP 的 `ToolKind` 推导：读、搜索、获取为并行安全，其余不是。不增加单独的标志。
+   - 并行安全由 `core` 自己的 `ToolKind` 推导：读、搜索为并行安全，其余不是。ACP 适配层把 `ToolKind` 一对一映射为 ACP 的 tool kind。不增加单独的标志。
    - MCP tool 带 `readOnlyHint = true` 时，映射为读类。
    - 校验和权限请求按调用顺序依次执行。
    - 结果按原调用顺序追加到历史。
 7. 权限被拒绝时，只让被拒的调用失败，生成一条错误结果交给模型。如果用户取消整个回合（`request_permission` 返回 `cancelled`），全部终止。
 8. tool 失败（抛出异常、未知 tool、参数校验失败）转成错误结果交给模型，循环继续。
 9. 回复因长度截断且含 tool 调用时，全部调用判失败，不执行。
+10. 取消：`CancelToken` 提供 `isCancelled()` 和 `onCancel(Runnable)`。循环在读取模型流和执行 tool 时，注册「中断当前虚拟线程」的动作。循环捕获 IO 异常后，用 `isCancelled()` 区分取消和真实错误。不依赖 `stream.close()`：`openai-java` 的 `close()` 在阻塞读取时会阻塞到读超时。
+11. 权限判断：`Tool.needsPermission(arguments, context)` 返回调用是否需要用户批准，默认值是 `true`。`read`、`grep`、`find`、`ls` 在 `cwd` 内返回 `false`，`skill` 返回 `false`。
+12. 标题：`Tool.title(arguments)` 返回给用户看的一行英文说明，默认值是 tool 名称。参数通过校验后，循环调用一次，结果同时用于权限请求和 tool 调用开始事件。未知 tool 或校验失败时，用 tool 名称。标题不得截断用户正在批准的内容。
 
 ### 会话与持久化
 
@@ -154,7 +157,7 @@
 - Jackson 共存：Anthropic 和 OpenAI 的 SDK 使用 Jackson 2（`com.fasterxml`），ACP SDK 和 Spring Boot 4.1 使用 Jackson 3（`tools.jackson`）。两者包名不同，可以共存，但项目创建后必须用依赖树确认。
 - OpenAI 兼容服务商的非标准字段，例如思考内容，是否能通过 `openai-java` 读取。
 - `openai-java` 的 `baseUrl` 在构建器上的设置方式。
-- 取消：`Model.stream` 目前没有取消参数。实现 `CancelToken` 时决定：由循环从另一个线程关闭流，还是把 `CancelToken` 传入 `stream`。关闭流的做法需要先验证 Anthropic 和 OpenAI SDK 在阻塞读取时被关闭的行为。
+- 取消：已验证中断虚拟线程对两个 SDK 都有效（本地 mock 服务器，`anthropic-java` 3.8.0，`openai-java` 4.101.0）。真实服务商、TLS、HTTP/2 下的行为未验证。ACP SDK 分配的 prompt 线程被中断后的行为未验证，接入 `acp` 模块后用集成测试确认。
 
 ### ACP 细节
 
