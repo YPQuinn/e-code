@@ -9,12 +9,6 @@ import io.agentic.pplee.ecode.core.tool.ToolKind;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 final class ToolCallRunner {
 
@@ -22,165 +16,107 @@ final class ToolCallRunner {
 
     private final TurnContext turn;
     private final ArgumentValidator validator = new ArgumentValidator();
-    private final ReentrantLock eventLock = new ReentrantLock();
+    private final ToolBatchExecutor executor;
 
     ToolCallRunner(TurnContext turn) {
         this.turn = turn;
+        this.executor = new ToolBatchExecutor(
+                turn.toolContext(),
+                turn.cancel(),
+                turn.events()::toolCallFinished);
     }
 
     void runAll(Message.Assistant reply) {
         List<ContentBlock.ToolCall> calls = reply.toolCalls();
-        Message.ToolResult[] results = new Message.ToolResult[calls.size()];
         boolean truncated = reply.stopReason() == StopReason.LENGTH;
+        List<ToolBatchExecutor.Task> tasks = new ArrayList<>(calls.size());
         boolean cancelled = false;
 
-        try {
-            List<PendingCall> pending = prepareAll(calls, results, truncated);
-            cancelled = executeAll(pending, results);
-        } catch (TurnCancelled e) {
-            cancelled = true;
+        for (ContentBlock.ToolCall call : calls) {
+            try {
+                tasks.add(prepare(call, truncated));
+            } catch (TurnCancelled e) {
+                cancelled = true;
+                break;
+            }
         }
 
-        for (int i = 0; i < calls.size(); i++) {
-            Message.ToolResult result = results[i];
-            turn.history().append(result != null ? result : Message.ToolResult.error(calls.get(i), CANCELED));
-        }
-        if (cancelled) {
+        List<ToolBatchExecutor.Outcome> outcomes = cancelled
+                ? alreadyDoneOutcomes(tasks)
+                : executor.executeAll(tasks);
+
+        if (recordHistory(calls, outcomes) || cancelled) {
             throw new TurnCancelled();
         }
     }
 
-    private List<PendingCall> prepareAll(List<ContentBlock.ToolCall> calls,
-                                         Message.ToolResult[] results,
-                                         boolean truncated) {
-        List<PendingCall> pending = new ArrayList<>();
-        for (int i = 0; i < calls.size(); i++) {
-            if (turn.cancel().isCancelled()) {
-                throw new TurnCancelled();
-            }
-            ContentBlock.ToolCall call = calls.get(i);
-            Optional<Tool> found = turn.tools().find(call.name());
-            if (found.isEmpty()) {
-                results[i] = reject(call, ToolKind.OTHER, "Unknown tool: " + call.name());
-                continue;
-            }
-            Tool tool = found.get();
-            if (truncated) {
-                results[i] = reject(call, tool.kind(), "Response was cut off before the call completed");
-                continue;
-            }
-            Optional<String> validationError = validator.validate(tool.definition().inputSchema(), call.arguments());
-            if (validationError.isPresent()) {
-                results[i] = reject(call, tool.kind(), validationError.get());
-                continue;
-            }
-            String title = tool.title(call.arguments());
-            turn.events().toolCallStarted(call, tool.kind(), title);
-            if (tool.needsPermission(call.arguments(), turn.toolContext())) {
-                switch (turn.gate().request(new PermissionRequest(call, tool.kind(), title))) {
-                    case REJECT -> {
-                        results[i] = finish(Message.ToolResult.error(call, "Permission denied by the user"));
-                        continue;
-                    }
-                    case CANCEL -> throw new TurnCancelled();
-                    case ALLOW -> {
-                    }
+    private ToolBatchExecutor.Task prepare(ContentBlock.ToolCall call, boolean truncated) {
+        if (turn.cancel().isCancelled()) {
+            throw new TurnCancelled();
+        }
+        Optional<Tool> found = turn.tools().find(call.name());
+        if (found.isEmpty()) {
+            return reject(call, ToolKind.OTHER, "Unknown tool: " + call.name());
+        }
+        Tool tool = found.get();
+        if (truncated) {
+            return reject(call, tool.kind(), "Response was cut off before the call completed");
+        }
+        Optional<String> validationError = validator.validate(tool.definition().inputSchema(), call.arguments());
+        if (validationError.isPresent()) {
+            return reject(call, tool.kind(), validationError.get());
+        }
+        String title = tool.title(call.arguments());
+        turn.events().toolCallStarted(call, tool.kind(), title);
+        if (tool.needsPermission(call.arguments(), turn.toolContext())) {
+            switch (turn.gate().request(new PermissionRequest(call, tool.kind(), title))) {
+                case REJECT -> {
+                    return finishNow(Message.ToolResult.error(call, "Permission denied by the user"));
                 }
-            }
-            pending.add(new PendingCall(i, call, tool));
-        }
-        return pending;
-    }
-
-    private boolean executeAll(List<PendingCall> pending, Message.ToolResult[] results) {
-        if (pending.isEmpty()) {
-            return false;
-        }
-        var rwLock = new ReentrantReadWriteLock(true);
-        List<SubmittedCall> submitted = new ArrayList<>(pending.size());
-        boolean cancelled = false;
-        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            for (PendingCall item : pending) {
-                Future<Message.ToolResult> future = executor.submit(
-                        () -> invoke(item.call(), item.tool(), rwLock));
-                submitted.add(new SubmittedCall(item.index(), future));
-            }
-            for (SubmittedCall item : submitted) {
-                try {
-                    results[item.index()] = item.future().get();
-                } catch (ExecutionException e) {
-                    Throwable cause = e.getCause();
-                    if (cause instanceof TurnCancelled) {
-                        cancelled = true;
-                    } else if (cause instanceof Error err) {
-                        throw err;
-                    } else if (cause instanceof RuntimeException runtime) {
-                        throw runtime;
-                    } else {
-                        throw new IllegalStateException("Unexpected checked exception from tool runner", cause);
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    submitted.forEach(s -> s.future().cancel(true));
-                    cancelled = true;
-                    break;
+                case CANCEL -> throw new TurnCancelled();
+                case ALLOW -> {
                 }
             }
         }
-        return cancelled;
+        return new ToolBatchExecutor.Task.Ready(call, tool);
     }
 
-    private Message.ToolResult reject(ContentBlock.ToolCall call, ToolKind kind, String reason) {
+    private ToolBatchExecutor.Task reject(ContentBlock.ToolCall call, ToolKind kind, String reason) {
         turn.events().toolCallStarted(call, kind, call.name());
-        return finish(Message.ToolResult.error(call, reason));
+        return finishNow(Message.ToolResult.error(call, reason));
     }
 
-    private Message.ToolResult invoke(ContentBlock.ToolCall call, Tool tool, ReentrantReadWriteLock rwLock) {
-        Lock lock = tool.kind().parallelSafe() ? rwLock.readLock() : rwLock.writeLock();
-        Message.ToolResult result;
-        try (var ignored = turn.cancel().onCancel(Thread.currentThread()::interrupt)) {
-            lock.lockInterruptibly();
-            try {
-                if (turn.cancel().isCancelled()) {
-                    throw new TurnCancelled();
+    private ToolBatchExecutor.Task finishNow(Message.ToolResult result) {
+        turn.events().toolCallFinished(result);
+        return new ToolBatchExecutor.Task.AlreadyDone(result);
+    }
+
+    private static List<ToolBatchExecutor.Outcome> alreadyDoneOutcomes(List<ToolBatchExecutor.Task> tasks) {
+        List<ToolBatchExecutor.Outcome> outcomes = new ArrayList<>(tasks.size());
+        for (ToolBatchExecutor.Task task : tasks) {
+            if (task instanceof ToolBatchExecutor.Task.AlreadyDone done) {
+                outcomes.add(new ToolBatchExecutor.Outcome.Finished(done.result()));
+            } else {
+                outcomes.add(new ToolBatchExecutor.Outcome.Cancelled());
+            }
+        }
+        return outcomes;
+    }
+
+    private boolean recordHistory(List<ContentBlock.ToolCall> calls, List<ToolBatchExecutor.Outcome> outcomes) {
+        boolean anyCancelled = false;
+        for (int i = 0; i < calls.size(); i++) {
+            ToolBatchExecutor.Outcome outcome = i < outcomes.size()
+                    ? outcomes.get(i)
+                    : new ToolBatchExecutor.Outcome.Cancelled();
+            switch (outcome) {
+                case ToolBatchExecutor.Outcome.Finished finished -> turn.history().append(finished.result());
+                case ToolBatchExecutor.Outcome.Cancelled ignored -> {
+                    anyCancelled = true;
+                    turn.history().append(Message.ToolResult.error(calls.get(i), CANCELED));
                 }
-                String text = tool.execute(call.arguments(), turn.toolContext());
-                result = new Message.ToolResult(call.id(), call.name(), text, false);
-            } finally {
-                lock.unlock();
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            if (turn.cancel().isCancelled()) {
-                throw new TurnCancelled();
-            }
-            result = Message.ToolResult.error(call, errorMessage(e));
-        } catch (TurnCancelled e) {
-            throw e;
-        } catch (Exception e) {
-            if (turn.cancel().isCancelled()) {
-                throw new TurnCancelled();
-            }
-            result = Message.ToolResult.error(call, errorMessage(e));
         }
-        return finish(result);
+        return anyCancelled;
     }
-
-    private Message.ToolResult finish(Message.ToolResult result) {
-        eventLock.lock();
-        try {
-            turn.events().toolCallFinished(result);
-            return result;
-        } finally {
-            eventLock.unlock();
-        }
-    }
-
-    private static String errorMessage(Exception e) {
-        return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-    }
-
-    private record PendingCall(int index, ContentBlock.ToolCall call, Tool tool) {}
-
-    private record SubmittedCall(int index, Future<Message.ToolResult> future) {}
 }
