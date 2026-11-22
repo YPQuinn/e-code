@@ -11,7 +11,6 @@ import java.util.Deque;
 import java.util.List;
 import java.util.stream.Stream;
 
-/** A model that plays back one prepared event list per call and records every request. */
 final class ScriptedModel implements Model {
 
     private final Deque<List<ModelEvent>> script = new ArrayDeque<>();

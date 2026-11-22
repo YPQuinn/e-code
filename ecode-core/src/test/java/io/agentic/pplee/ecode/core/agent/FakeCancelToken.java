@@ -1,12 +1,16 @@
 package io.agentic.pplee.ecode.core.agent;
 
-/** A token that the test cancels by hand. It never runs registered actions. */
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
 final class FakeCancelToken implements CancelToken {
 
+    private final List<Runnable> actions = new CopyOnWriteArrayList<>();
     private volatile boolean cancelled;
 
     void cancel() {
         cancelled = true;
+        actions.forEach(Runnable::run);
     }
 
     @Override
@@ -16,7 +20,10 @@ final class FakeCancelToken implements CancelToken {
 
     @Override
     public Registration onCancel(Runnable action) {
-        return () -> {
-        };
+        actions.add(action);
+        if (cancelled) {
+            action.run();
+        }
+        return () -> actions.remove(action);
     }
 }

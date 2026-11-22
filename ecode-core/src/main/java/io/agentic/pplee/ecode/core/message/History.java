@@ -5,12 +5,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-/**
- * The messages of one session. Not thread-safe: one turn at a time uses it.
- * <p>
- * Invariant: when a turn ends, every tool call of the last assistant message has a result.
- * Model providers reject a history that breaks it.
- */
 public final class History {
 
     private final List<Message> messages;
@@ -27,7 +21,6 @@ public final class History {
         return List.copyOf(messages);
     }
 
-    /** Gives an error result to each call of the last assistant message that has no result yet. */
     public void failUnanswered(String reason) {
         int assistantIndex = lastAssistantIndex();
         if (assistantIndex < 0) {

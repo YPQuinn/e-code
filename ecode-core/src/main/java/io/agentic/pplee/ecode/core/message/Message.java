@@ -15,7 +15,6 @@ public sealed interface Message {
         }
 
         public List<ContentBlock.ToolCall> toolCalls() {
-            // in the order of occurrence
             return content.stream()
                     .<ContentBlock.ToolCall>mapMulti((block, sink) -> {
                         if (block instanceof ContentBlock.ToolCall call) {

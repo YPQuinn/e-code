@@ -4,10 +4,6 @@ import io.agentic.pplee.ecode.core.message.Message;
 import io.agentic.pplee.ecode.core.message.StopReason;
 import io.agentic.pplee.ecode.core.model.Model;
 
-/**
- * Drives one prompt: asks the model, runs its tool calls, and repeats until the model stops.
- * Stateless and thread-safe. All session data arrives in the {@link TurnContext}.
- */
 public final class AgentLoop {
 
     private final Model model;
@@ -18,11 +14,6 @@ public final class AgentLoop {
         this.limit = limit;
     }
 
-    /**
-     * Runs model turns until the model stops. Appends every new message to the turn's history.
-     *
-     * @throws AgentException when the model call fails
-     */
     public TurnOutcome run(TurnContext turn) {
         var reader = new ModelReader(model, turn);
         var runner = new ToolCallRunner(turn);

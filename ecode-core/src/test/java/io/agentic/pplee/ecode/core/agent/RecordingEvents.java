@@ -7,7 +7,6 @@ import io.agentic.pplee.ecode.core.tool.ToolKind;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Records every event as one short line, for example {@code start:call_1:READ:Run read}. */
 final class RecordingEvents implements AgentEvents {
 
     private final List<String> log = new ArrayList<>();

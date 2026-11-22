@@ -5,7 +5,6 @@ import io.agentic.pplee.ecode.core.model.Model;
 import io.agentic.pplee.ecode.core.model.ModelEvent;
 import io.agentic.pplee.ecode.core.model.ModelRequest;
 
-/** Reads one model reply and forwards its deltas to the turn's events. */
 final class ModelReader {
 
     private final Model model;

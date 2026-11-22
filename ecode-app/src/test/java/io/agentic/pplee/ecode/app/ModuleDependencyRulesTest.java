@@ -7,10 +7,6 @@ import com.tngtech.archunit.lang.ArchRule;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
-/**
- * 模块依赖规则：依赖只能向下，core 在最底层，同一层的模块互不依赖。
- * 规则按包名匹配。模块暂时没有类时，规则空转通过，所以用 allowEmptyShould。
- */
 @AnalyzeClasses(packages = "io.agentic.pplee.ecode", importOptions = ImportOption.DoNotIncludeTests.class)
 class ModuleDependencyRulesTest {
 

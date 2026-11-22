@@ -8,19 +8,31 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicInteger;
 
-/** A read tool whose behavior is set by the test. */
 final class StubTool implements Tool {
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     private final String name;
+    private ToolKind kind = ToolKind.READ;
+    private JsonNode inputSchema = JSON.createObjectNode();
     private boolean needsPermission;
     private Callable<String> body = () -> "ok";
-    private int executions;
+    private final AtomicInteger executions = new AtomicInteger();
 
     StubTool(String name) {
         this.name = name;
+    }
+
+    StubTool kind(ToolKind kind) {
+        this.kind = kind;
+        return this;
+    }
+
+    StubTool inputSchema(JsonNode inputSchema) {
+        this.inputSchema = inputSchema;
+        return this;
     }
 
     StubTool needingPermission() {
@@ -39,17 +51,17 @@ final class StubTool implements Tool {
     }
 
     int executions() {
-        return executions;
+        return executions.get();
     }
 
     @Override
     public ToolDefinition definition() {
-        return new ToolDefinition(name, "stub", JSON.createObjectNode());
+        return new ToolDefinition(name, "stub", inputSchema);
     }
 
     @Override
     public ToolKind kind() {
-        return ToolKind.READ;
+        return kind;
     }
 
     @Override
@@ -64,7 +76,7 @@ final class StubTool implements Tool {
 
     @Override
     public String execute(JsonNode arguments, ToolContext context) throws Exception {
-        executions++;
+        executions.incrementAndGet();
         return body.call();
     }
 }

@@ -8,14 +8,21 @@ import io.agentic.pplee.ecode.core.message.Usage;
 import io.agentic.pplee.ecode.core.model.ModelEvent;
 import io.agentic.pplee.ecode.core.tool.Tool;
 import io.agentic.pplee.ecode.core.tool.ToolContext;
+import io.agentic.pplee.ecode.core.tool.ToolKind;
 import io.agentic.pplee.ecode.core.tool.ToolRegistry;
 
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,6 +41,11 @@ class AgentLoopTest {
             new Message.User("hi")));
 
     private PermissionDecision decision = PermissionDecision.ALLOW;
+
+    @AfterEach
+    void clearInterruptFlag() {
+        Thread.interrupted();
+    }
 
     @Test
     void endsTurnWhenReplyHasNoToolCalls() {
@@ -210,7 +222,118 @@ class AgentLoopTest {
         assertThat(run(TurnLimit.unlimited())).isEqualTo(TurnOutcome.CANCELLED);
     }
 
-    // The only place that knows how to build and start the loop.
+    @Test
+    void failsInvalidArgumentsBeforeCallingTitleOrExecute() {
+        JsonNode schema = JSON.readTree("""
+                {
+                  "type": "object",
+                  "properties": { "path": { "type": "string" } },
+                  "required": ["path"]
+                }
+                """);
+        var read = new StubTool("read").inputSchema(schema);
+        model.reply(assistant(StopReason.TOOL_USE, call("call_1", "read")))
+                .reply(assistant(StopReason.STOP));
+
+        assertThat(run(TurnLimit.unlimited(), read)).isEqualTo(TurnOutcome.END_TURN);
+
+        assertThat(read.executions()).isZero();
+        assertThat(events.log()).containsExactly("start:call_1:READ:read", "finish:call_1:true");
+        assertThat(toolResults()).singleElement().satisfies(result -> {
+            assertThat(result.isError()).isTrue();
+            assertThat(result.text()).contains("Invalid arguments");
+        });
+    }
+
+    @Test
+    void runsParallelSafeToolsConcurrentlyAndKeepsCallOrder() {
+        var bothStarted = new CountDownLatch(2);
+        var firstRelease = new CountDownLatch(1);
+        var slow = new StubTool("slow").kind(ToolKind.READ).doing(() -> {
+            bothStarted.countDown();
+            assertThat(bothStarted.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(firstRelease.await(2, TimeUnit.SECONDS)).isTrue();
+            return "slow-done";
+        });
+        var fast = new StubTool("fast").kind(ToolKind.SEARCH).doing(() -> {
+            bothStarted.countDown();
+            assertThat(bothStarted.await(2, TimeUnit.SECONDS)).isTrue();
+            firstRelease.countDown();
+            return "fast-done";
+        });
+        model.reply(assistant(StopReason.TOOL_USE, call("call_1", "slow"), call("call_2", "fast")))
+                .reply(assistant(StopReason.STOP));
+
+        assertThat(run(TurnLimit.unlimited(), slow, fast)).isEqualTo(TurnOutcome.END_TURN);
+
+        assertThat(toolResults()).containsExactly(
+                new Message.ToolResult("call_1", "slow", "slow-done", false),
+                new Message.ToolResult("call_2", "fast", "fast-done", false));
+    }
+
+    @Test
+    void excludesOtherToolsWhileWriteToolRuns() {
+        var active = new AtomicInteger();
+        var maxConcurrent = new AtomicInteger();
+        Callable<String> work = () -> {
+            int now = active.incrementAndGet();
+            maxConcurrent.accumulateAndGet(now, Math::max);
+            try {
+                Thread.sleep(50);
+                return "ok";
+            } finally {
+                active.decrementAndGet();
+            }
+        };
+        var read = new StubTool("read").kind(ToolKind.READ).doing(work);
+        var write = new StubTool("write").kind(ToolKind.EDIT).doing(work);
+        model.reply(assistant(StopReason.TOOL_USE, call("call_1", "read"), call("call_2", "write")))
+                .reply(assistant(StopReason.STOP));
+
+        assertThat(run(TurnLimit.unlimited(), read, write)).isEqualTo(TurnOutcome.END_TURN);
+
+        assertThat(maxConcurrent.get()).isEqualTo(1);
+    }
+
+    @Test
+    void interruptsBlockedToolWhenCancelTokenFires() {
+        var started = new CountDownLatch(1);
+        var blocker = new StubTool("read").doing(() -> {
+            started.countDown();
+            new CountDownLatch(1).await();
+            return "unreachable";
+        });
+        model.reply(assistant(StopReason.TOOL_USE, call("call_1", "read")));
+
+        Thread.ofVirtual().start(() -> {
+            try {
+                if (started.await(2, TimeUnit.SECONDS)) {
+                    cancel.cancel();
+                }
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        assertThat(run(TurnLimit.unlimited(), blocker)).isEqualTo(TurnOutcome.CANCELLED);
+        assertThat(toolResults()).containsExactly(
+                new Message.ToolResult("call_1", "read", "Canceled by the user", true));
+    }
+
+    @Test
+    void fallsBackToExceptionClassNameWhenExceptionMessageIsNull() {
+        var read = new StubTool("read").doing(() -> {
+            throw new IllegalStateException();
+        });
+        model.reply(assistant(StopReason.TOOL_USE, call("call_1", "read")))
+                .reply(assistant(StopReason.STOP));
+
+        assertThat(run(TurnLimit.unlimited(), read)).isEqualTo(TurnOutcome.END_TURN);
+
+        assertThat(toolResults()).containsExactly(
+                new Message.ToolResult("call_1", "read", "IllegalStateException", true));
+    }
+
     private TurnOutcome run(TurnLimit limit, Tool... tools) {
         PermissionGate gate = request -> {
             asked.add(request);
