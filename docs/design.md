@@ -125,7 +125,7 @@
 3. `edit` 采用 pi 的精确替换，不用 `apply_patch`：
    - 参数是 `edits[]`，每项含 `oldText` 和 `newText`。
    - `oldText` 必须在原文件中唯一匹配。多处修改各自对照原文件匹配，互不重叠。
-4. 输出上限沿用 pi：最多 2000 行或 50 KB，先到者为准。`bash` 保留末尾部分。超出时，完整输出写入临时文件，并把路径告诉模型。MCP tool 的上限是 20 KB，两者独立。
+4. 输出上限沿用 pi：最多 2000 行或 50 KB，先到者为准。`bash` 保留末尾部分。`read` 每行带 1-based `{line_num}: ` 前缀，超限时只提示下一 `offset` 续读，不写临时文件；`ls`、`find`、`grep`、`bash` 超限时把完整输出写入临时文件，并把路径告诉模型。MCP tool 的上限是 20 KB，两者独立。
 5. 同一文件的并发写入由读写锁保证：写 tool 持写锁，与所有其他调用互斥。不实现 pi 的 `file-mutation-queue`。
 6. `bash` 默认超时 120 秒。模型可以用 `timeout` 参数指定。超时或取消时，终止整个进程树。
 7. 路径权限：
@@ -168,6 +168,10 @@
 ### 项目骨架
 
 - Streamable HTTP 传输下，本地 tool 作用于服务器而不是用户机器，需确认使用场景。
+
+### 内置 tool 安全细节
+
+- `bash` 子进程当前继承全部环境变量（只额外注入 `NO_COLOR`、`TERM`、`PAGER`、`GIT_PAGER`、`GIT_TERMINAL_PROMPT`）。后续设计安全策略时，必须统一决定凭据环境变量（如模型 API Key 与自定义 Token）的过滤规则。
 
 ## 参考
 
